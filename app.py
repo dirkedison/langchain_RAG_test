@@ -6,6 +6,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import Chroma
 import tempfile
+import requests
 
 # Load environment variables
 load_dotenv()
@@ -79,6 +80,35 @@ if uploaded_files:
 else:
     st.sidebar.info("No files uploaded. Using sample data.")
 
+# --- RAG Retrieval and Answer Generation ---
+def retrieve_context(question, vectordb, k=3):
+    # Embed the question and retrieve top-k relevant chunks
+    docs_and_scores = vectordb.similarity_search_with_score(question, k=k)
+    # Filter by a reasonable similarity threshold (optional)
+    threshold = 0.7  # Lower is more similar; adjust as needed
+    relevant_chunks = [doc.page_content for doc, score in docs_and_scores if score < threshold]
+    return relevant_chunks
+
+# Hugging Face LLM API call
+def call_hf_llm(prompt, model="HuggingFaceH4/zephyr-7b-beta"):
+    api_url = f"https://api-inference.huggingface.co/models/{model}"
+    headers = {"Authorization": f"Bearer {HUGGINGFACEHUB_API_TOKEN}"}
+    payload = {"inputs": prompt}
+    response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+    if response.status_code == 200:
+        result = response.json()
+        # Handle both string and list outputs
+        if isinstance(result, list) and len(result) > 0 and "generated_text" in result[0]:
+            return result[0]["generated_text"]
+        elif isinstance(result, dict) and "generated_text" in result:
+            return result["generated_text"]
+        elif isinstance(result, str):
+            return result
+        else:
+            return str(result)
+    else:
+        return f"[Error] Hugging Face API: {response.status_code} - {response.text}"
+
 # Main chat interface
 st.header("Ask a Question")
 user_question = st.text_input("Enter your question:")
@@ -87,8 +117,20 @@ if st.button("Get Answer"):
     if not user_question:
         st.warning("Please enter a question.")
     else:
-        st.info("Context retrieved and ready for RAG pipeline (answer generation not yet implemented)...")
-        st.write("**Answer:** _This is a placeholder. The real answer will appear here._")
+        with st.spinner("Retrieving context and generating answer..."):
+            relevant_chunks = retrieve_context(user_question, vectordb, k=3)
+            if relevant_chunks:
+                context = "\n\n".join(relevant_chunks)
+                prompt = f"Context:\n{context}\n\nQuestion:\n{user_question}\n\nAnswer:"
+                st.info("Relevant context retrieved and sent to LLM.")
+            else:
+                prompt = f"Question:\n{user_question}\n\nAnswer:"
+                st.info("No relevant context found. Falling back to LLM-only mode.")
+            answer = call_hf_llm(prompt)
+            st.write(f"**Answer:** {answer}")
+            if relevant_chunks:
+                with st.expander("Show retrieved context"):
+                    st.write(context)
 
 st.markdown("---")
-st.markdown("_Document ingestion, chunking, and embedding are now implemented. Next: retrieval and answer generation._")
+st.markdown("_RAG retrieval and answer generation are now implemented!_\n\nYou can upload your own documents or use the sample data to ask questions.")
